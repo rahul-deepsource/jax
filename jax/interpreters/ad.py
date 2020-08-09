@@ -605,12 +605,13 @@ def _raise_custom_vjp_error_on_jvp(*_, **__):
                   "function.")
 custom_lin_p.def_impl(_raise_custom_vjp_error_on_jvp)
 
-def _custom_lin_transpose(cts_out, *invals, num_res, bwd, avals_out):
-  res, _ = split_list(invals, [num_res])
+def _custom_lin_transpose(cts_out, *invals, bwd_jaxpr, num_res, num_consts,
+                          avals_out):
+  consts, res, _ = split_list(invals, [num_consts, num_res])
   cts_out = map(instantiate_zeros_aval, avals_out, cts_out)
-  cts_in = bwd.call_wrapped(*res, *cts_out)
+  cts_in = core.jaxpr_as_fun(bwd_jaxpr)(*consts, *res, *cts_out)
   cts_in_flat, _ = tree_flatten(cts_in)  # already checked tree structure
-  return [None] * num_res + cts_in_flat
+  return [None] * (num_consts + num_res) + cts_in_flat
 primitive_transposes[custom_lin_p] = _custom_lin_transpose
 
 

@@ -71,11 +71,12 @@ def _memoize(thunk):
 def _initial_style_jaxpr(fun, in_avals):
   in_pvals = [pe.PartialVal.unknown(aval) for aval in in_avals]
   jaxpr, out_pvals, consts = pe.trace_to_jaxpr(fun, in_pvals, instantiate=True,
-                                               bottom=True, stage_out=False)
-  assert not any(isinstance(c, core.Tracer) for c in consts)
+                                               bottom=False, stage_out=False)
+  const_avals = [raise_to_shaped(core.get_aval(c)) for c in consts]
   out_avals = map(raise_to_shaped, unzip2(out_pvals)[0])
-  typed_jaxpr = core.TypedJaxpr(jaxpr, consts, in_avals, out_avals)
-  return typed_jaxpr
+  typed_jaxpr = core.TypedJaxpr(pe.convert_constvars_jaxpr(jaxpr), (),
+                                const_avals + in_avals, out_avals)
+  return typed_jaxpr, consts
 
 def _initial_style_staging() -> bool:
   if config.omnistaging_enabled:
@@ -480,7 +481,7 @@ class custom_vjp:
     flat_fun, out_tree = flatten_fun_nokwargs(f_, in_tree)
     flat_fwd, out_trees = _flatten_fwd(fwd, in_tree)
     flat_bwd = _flatten_bwd(bwd, in_tree, out_trees)
-    if _initial_style_staging():
+    if True or _initial_style_staging():  # TODO
       out_flat = custom_vjp_call_jaxpr(flat_fun, flat_fwd, flat_bwd,
                                        *args_flat, out_trees=out_trees)
       out_tree = out_tree()
@@ -565,20 +566,28 @@ custom_vjp_call_jaxpr_p.def_abstract_eval(_custom_vjp_call_jaxpr_abstract_eval)
 
 def _custom_vjp_call_jaxpr_jvp(primals, tangents, *, fun_jaxpr, fwd_jaxpr_thunk,
                                bwd, out_trees, num_consts):
-  assert False  # TODO
-  tangents = map(ad.instantiate_zeros, tangents)
+  _, args = split_list(primals, [num_consts])
+  consts_dot, args_dot = split_list(tangents, [num_consts])
+  if any(type(t) is not Zero for t in consts_dot):
+    raise Exception  # TODO write error message
+  args_dot = map(ad.instantiate_zeros, args_dot)
   fwd_jaxpr, fwd_consts = fwd_jaxpr_thunk()
   out_tree, res_tree = out_trees()
-  res_and_primals_out = core.jaxpr_as_fun(fwd_jaxpr)(*primals)
+  res_and_primals_out = core.jaxpr_as_fun(fwd_jaxpr)(*fwd_consts, *args)
   res, primals_out = split_list(res_and_primals_out, [res_tree.num_leaves])
   avals_out = [raise_to_shaped(core.get_aval(x)) for x in primals_out]
+  # TODO it's grad of jit! gotta squeeze any tracers out of bwd now
+  bwd_avals = [raise_to_shaped(core.get_aval(x)) for x in res_and_primals_out]
+  bwd_jaxpr, bwd_consts = _initial_style_jaxpr(bwd, bwd_avals)
   tangents_out = ad.custom_lin_p.bind(
-      *res, *tangents, num_res=res_tree.num_leaves, bwd=bwd, avals_out=avals_out)
+      *bwd_consts, *res, *args_dot,
+      bwd_jaxpr=bwd_jaxpr, num_res=len(res), num_consts=len(bwd_consts),
+      avals_out=avals_out)
   return primals_out, tangents_out
 ad.primitive_jvps[custom_vjp_call_jaxpr_p] = _custom_vjp_call_jaxpr_jvp
 
 def _custom_vjp_call_jaxpr_vmap(args, in_dims, *, fun_jaxpr, fwd_jaxpr_thunk,
-                                bwd, out_trees):
+                                bwd, out_trees, num_consts):
   size, = {x.shape[d] for x, d in zip(args, in_dims) if d is not not_mapped}
   args = [batching.moveaxis(x, d, 0) if d is not not_mapped and d != 0
           else x for x, d in zip(args, in_dims)]
@@ -602,7 +611,7 @@ def _custom_vjp_call_jaxpr_vmap(args, in_dims, *, fun_jaxpr, fwd_jaxpr_thunk,
   batched_outs = custom_vjp_call_jaxpr_p.bind(
       *args, fun_jaxpr=batched_fun_jaxpr,
       fwd_jaxpr_thunk=batched_fwd_jaxpr_thunk, bwd=batched_bwd,
-      out_trees=out_trees)
+      out_trees=out_trees, num_consts=num_consts)
   out_dims = out_dims2[0] if out_dims2 else out_dims1
   return batched_outs, out_dims
 batching.primitive_batchers[custom_vjp_call_jaxpr_p] = _custom_vjp_call_jaxpr_vmap
