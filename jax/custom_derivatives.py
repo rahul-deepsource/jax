@@ -317,10 +317,13 @@ custom_jvp_call_jaxpr_p.def_abstract_eval(_custom_jvp_call_jaxpr_abstract_eval)
 
 def _custom_jvp_call_jaxpr_jvp(primals, tangents, *, fun_jaxpr, jvp_jaxpr_thunk,
                                num_consts):
-  breakpoint()
-  jvp_jaxpr = jvp_jaxpr_thunk()
-  tangents = map(ad.instantiate_zeros, tangents)
-  outs = core.jaxpr_as_fun(jvp_jaxpr)(*primals, *tangents)
+  _, args = split_list(tangents, [num_consts])
+  consts_dot, args_dot = split_list(tangents, [num_consts])
+  if any(type(t) is not Zero for t in consts_dot):
+    raise Exception  # TODO write error message
+  jvp_jaxpr, jvp_consts = jvp_jaxpr_thunk()
+  tangents = map(ad.instantiate_zeros, args_dot)
+  outs = core.jaxpr_as_fun(jvp_jaxpr)(*jvp_consts, *args, *args_dot)
   return split_list(outs, [len(outs) // 2])
 ad.primitive_jvps[custom_jvp_call_jaxpr_p] = _custom_jvp_call_jaxpr_jvp
 
