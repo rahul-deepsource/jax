@@ -226,7 +226,7 @@ class custom_jvp:
     args_flat, in_tree = tree_flatten(dyn_args)
     flat_fun, out_tree1 = flatten_fun_nokwargs(f_, in_tree)
     flat_jvp, out_tree2 = _flatten_jvp(jvp, in_tree)
-    if _initial_style_staging():
+    if True or _initial_style_staging():  # TODO
       out_flat = custom_jvp_call_jaxpr(flat_fun, flat_jvp, *args_flat)
       out_tree = out_tree1()
     else:
@@ -296,15 +296,18 @@ custom_jvp_call = custom_jvp_call_p.bind
 
 def custom_jvp_call_jaxpr(fun, jvp, *args):
   in_avals = [raise_to_shaped(core.get_aval(x)) for x in args]
-  fun_jaxpr = _initial_style_jaxpr(fun, in_avals)
+  fun_jaxpr, consts = _initial_style_jaxpr(fun, in_avals)
   jvp_jaxpr_thunk = _memoize(lambda: _initial_style_jaxpr(jvp, in_avals * 2))
-  return custom_jvp_call_jaxpr_p.bind(*args, fun_jaxpr=fun_jaxpr,
-                                      jvp_jaxpr_thunk=jvp_jaxpr_thunk)
+  return custom_jvp_call_jaxpr_p.bind(*consts, *args, fun_jaxpr=fun_jaxpr,
+                                      jvp_jaxpr_thunk=jvp_jaxpr_thunk,
+                                      num_consts=len(consts))
 
-def _custom_jvp_call_jaxpr_impl(*args, fun_jaxpr, **_):
+def _custom_jvp_call_jaxpr_impl(*args, fun_jaxpr, **params):
+  del params  # other params ignoed because we're just executing primal fun
   return core.jaxpr_as_fun(fun_jaxpr)(*args)
 
-def _custom_jvp_call_jaxpr_abstract_eval(*_, fun_jaxpr, **__):
+def _custom_jvp_call_jaxpr_abstract_eval(*args, fun_jaxpr, **params):
+  del args, params
   return fun_jaxpr.out_avals
 
 custom_jvp_call_jaxpr_p = core.Primitive('custom_jvp_call_jaxpr')
@@ -312,14 +315,17 @@ custom_jvp_call_jaxpr_p.multiple_results = True
 custom_jvp_call_jaxpr_p.def_impl(_custom_jvp_call_jaxpr_impl)
 custom_jvp_call_jaxpr_p.def_abstract_eval(_custom_jvp_call_jaxpr_abstract_eval)
 
-def _custom_jvp_call_jaxpr_jvp(primals, tangents, *, fun_jaxpr, jvp_jaxpr_thunk):
+def _custom_jvp_call_jaxpr_jvp(primals, tangents, *, fun_jaxpr, jvp_jaxpr_thunk,
+                               num_consts):
+  breakpoint()
   jvp_jaxpr = jvp_jaxpr_thunk()
   tangents = map(ad.instantiate_zeros, tangents)
   outs = core.jaxpr_as_fun(jvp_jaxpr)(*primals, *tangents)
   return split_list(outs, [len(outs) // 2])
 ad.primitive_jvps[custom_jvp_call_jaxpr_p] = _custom_jvp_call_jaxpr_jvp
 
-def _custom_jvp_call_jaxpr_vmap(args, in_dims, *, fun_jaxpr, jvp_jaxpr_thunk):
+def _custom_jvp_call_jaxpr_vmap(args, in_dims, *, fun_jaxpr, jvp_jaxpr_thunk,
+                                num_consts):
   size, = {x.shape[d] for x, d in zip(args, in_dims) if d is not not_mapped}
   args = [batching.moveaxis(x, d, 0) if d is not not_mapped and d != 0
           else x for x, d in zip(args, in_dims)]
@@ -332,7 +338,8 @@ def _custom_jvp_call_jaxpr_vmap(args, in_dims, *, fun_jaxpr, jvp_jaxpr_thunk):
 
   @_memoize
   def batched_jvp_jaxpr_thunk():
-    jvp_jaxpr = jvp_jaxpr_thunk()
+    breakpoint()
+    jvp_jaxpr, jvp_consts = jvp_jaxpr_thunk()
     _, all_batched = batching.batch_jaxpr(jvp_jaxpr, size, in_batched * 2, False)
     primals_batched, tangents_batched = split_list(all_batched, [num_out])
     out_batched = map(op.or_, primals_batched, tangents_batched)
@@ -342,7 +349,8 @@ def _custom_jvp_call_jaxpr_vmap(args, in_dims, *, fun_jaxpr, jvp_jaxpr_thunk):
     return batched_jvp_jaxpr
 
   batched_outs = custom_jvp_call_jaxpr_p.bind(
-      *args, fun_jaxpr=batched_fun_jaxpr, jvp_jaxpr_thunk=batched_jvp_jaxpr_thunk)
+      *args, fun_jaxpr=batched_fun_jaxpr, jvp_jaxpr_thunk=batched_jvp_jaxpr_thunk,
+      num_consts=num_consts)
   out_dims = out_dims2[0] if out_dims2 else out_dims1
   return batched_outs, out_dims
 batching.primitive_batchers[custom_jvp_call_jaxpr_p] = _custom_jvp_call_jaxpr_vmap
@@ -534,13 +542,14 @@ custom_vjp_call = custom_vjp_call_p.bind
 
 def custom_vjp_call_jaxpr(fun, fwd, bwd, *args, out_trees):
   in_avals = [raise_to_shaped(core.get_aval(x)) for x in args]
-  fun_jaxpr = _initial_style_jaxpr(fun, in_avals)
+  fun_jaxpr, consts = _initial_style_jaxpr(fun, in_avals)
   fwd_jaxpr_thunk = _memoize(lambda: _initial_style_jaxpr(fwd, in_avals))
-  return custom_vjp_call_jaxpr_p.bind(*args, fun_jaxpr=fun_jaxpr,
+  return custom_vjp_call_jaxpr_p.bind(*consts, *args, fun_jaxpr=fun_jaxpr,
                                       fwd_jaxpr_thunk=fwd_jaxpr_thunk, bwd=bwd,
-                                      out_trees=out_trees)
+                                      out_trees=out_trees, num_consts=len(consts))
 
-def _custom_vjp_call_jaxpr_impl(*args, fun_jaxpr, **_):
+def _custom_vjp_call_jaxpr_impl(*args, fun_jaxpr, **kwargs):
+  del kwargs  # vjp data ignored because we're evaluating primal function only
   return core.jaxpr_as_fun(fun_jaxpr)(*args)
 
 def _custom_vjp_call_jaxpr_abstract_eval(*_, fun_jaxpr, **__):
@@ -552,9 +561,10 @@ custom_vjp_call_jaxpr_p.def_impl(_custom_vjp_call_jaxpr_impl)
 custom_vjp_call_jaxpr_p.def_abstract_eval(_custom_vjp_call_jaxpr_abstract_eval)
 
 def _custom_vjp_call_jaxpr_jvp(primals, tangents, *, fun_jaxpr, fwd_jaxpr_thunk,
-                               bwd, out_trees):
+                               bwd, out_trees, num_consts):
+  assert False  # TODO
   tangents = map(ad.instantiate_zeros, tangents)
-  fwd_jaxpr = fwd_jaxpr_thunk()
+  fwd_jaxpr, fwd_consts = fwd_jaxpr_thunk()
   out_tree, res_tree = out_trees()
   res_and_primals_out = core.jaxpr_as_fun(fwd_jaxpr)(*primals)
   res, primals_out = split_list(res_and_primals_out, [res_tree.num_leaves])
@@ -607,8 +617,10 @@ def omnistaging_enabler() -> None:
 
   def _initial_style_jaxpr(fun, in_avals):
     jaxpr, out_avals, consts = pe.trace_to_jaxpr_dynamic(fun, in_avals)
-    typed_jaxpr = core.TypedJaxpr(jaxpr, consts, in_avals, out_avals)
-    return typed_jaxpr
+    const_avals = [raise_to_shaped(core.get_aval(c)) for c in consts]
+    typed_jaxpr = core.TypedJaxpr(pe.convert_constvars_jaxpr(jaxpr), (),
+                                  const_avals + in_avals, out_avals)
+    return typed_jaxpr, consts
 
   def bind(self, fun, jvp, *args):
     args = map(core.full_lower, args)
