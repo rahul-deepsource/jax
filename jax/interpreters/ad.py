@@ -307,6 +307,10 @@ class JVPTrace(Trace):
     out_tree, res_tree = out_trees()
     res, primals_out = split_list(res_and_primals_out, [res_tree.num_leaves])
     avals_out = [raise_to_shaped(core.get_aval(x)) for x in primals_out]
+    # TODO i changed custom_lin_p to take a jaxpr! we want bwd to stay python,
+    # but also we need nondiff_argnums to make contact with custom_lin_p (and
+    # not have bwd close over them)
+    breakpoint()
     tangents_out = custom_lin_p.bind(
         *res, *tangents_in, num_res=res_tree.num_leaves, bwd=bwd,
         avals_out=avals_out)

@@ -473,6 +473,7 @@ class custom_vjp:
       f_, dyn_args = argnums_partial(lu.wrap_init(self.fun), dyn_argnums, args)
       static_args = [args[i] for i in self.nondiff_argnums]
       fwd, _ = argnums_partial(lu.wrap_init(self.fwd), dyn_argnums, args)
+      # TODO TODO don't want to close over for bwd here
       bwd = _add_args(lu.wrap_init(self.bwd), static_args, left=True)
     else:
       f_, dyn_args = lu.wrap_init(self.fun), args
@@ -576,7 +577,6 @@ def _custom_vjp_call_jaxpr_jvp(primals, tangents, *, fun_jaxpr, fwd_jaxpr_thunk,
   res_and_primals_out = core.jaxpr_as_fun(fwd_jaxpr)(*fwd_consts, *args)
   res, primals_out = split_list(res_and_primals_out, [res_tree.num_leaves])
   avals_out = [raise_to_shaped(core.get_aval(x)) for x in primals_out]
-  # TODO it's grad of jit! gotta squeeze any tracers out of bwd now
   bwd_avals = [raise_to_shaped(core.get_aval(x)) for x in res_and_primals_out]
   bwd_jaxpr, bwd_consts = _initial_style_jaxpr(bwd, bwd_avals)
   tangents_out = ad.custom_lin_p.bind(
