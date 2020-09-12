@@ -1246,6 +1246,7 @@ def scan(f, init, xs, length=None, reverse=False, unroll=1):
   x_dtypes = [x.dtype for x in xs_flat]
   x_avals = tuple(_map(ShapedArray, x_shapes, x_dtypes))
   jaxpr, consts, out_tree = _initial_style_jaxpr(f, in_tree, carry_avals + x_avals)
+  _print_partial_eval_stats(f, jaxpr, consts)
   out_tree_children = out_tree.children()
   if len(out_tree_children) != 2:
     msg = "scan body output must be a pair, got {}."
@@ -2454,13 +2455,28 @@ def associative_scan(fn, elems, reverse=False):
 @config.register_omnistaging_enabler
 def omnistaging_enabler() -> None:
   global _initial_style_untyped_jaxpr, _initial_style_jaxpr, \
-      _initial_style_jaxprs_with_common_consts
+      _initial_style_jaxprs_with_common_consts, _print_partial_eval_stats
 
   @cache()
   def _initial_style_untyped_jaxpr(fun: Callable, in_tree, in_avals):
     wrapped_fun, out_tree = flatten_fun_nokwargs(lu.wrap_init(fun), in_tree)
     jaxpr, out_avals, consts = pe.trace_to_jaxpr_dynamic(wrapped_fun, in_avals)
     return jaxpr, out_avals, consts, out_tree()
+
+  def _print_partial_eval_stats(fun, typed_jaxpr, consts):
+    in_unknowns = [True] * len(typed_jaxpr.in_avals)
+    jaxpr_1, _, _ = pe.partial_eval_jaxpr(typed_jaxpr, in_unknowns, False)
+    jaxpr_1 = jaxpr_1.jaxpr
+    jaxpr_1.invars = [core.dropvar] * len(jaxpr_1.invars)
+    if jaxpr_1.eqns:
+      try:
+        filename = fun.__code__.co_filename
+        lineno = fun.__code__.co_firstlineno
+        fun_info = f"{fun.__name__} at {filename}:{lineno}"
+      except AttributeError:
+        fun_info = "<unknown>"
+      print(f"from tracing {fun_info}, this was not constant folded:\n\n"
+            f"{jaxpr_1}\n\n")
 
   @cache()
   def _initial_style_jaxpr(fun: Callable, in_tree, in_avals):
