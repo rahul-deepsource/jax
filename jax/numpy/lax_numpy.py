@@ -3335,7 +3335,7 @@ def lexsort(keys, axis=-1):
   keys = tuple(keys)
   if len(keys) == 0:
     raise TypeError("need sequence of keys with len > 0 in lexsort")
-  if len(set(shape(key) for key in keys)) > 1:
+  if len({shape(key) for key in keys}) > 1:
     raise ValueError("all keys need to be the same shape")
   if ndim(keys[0]) == 0:
     return np.int64(0)
